@@ -1,0 +1,16 @@
+[package]
+name = "throughput"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "writer"
+path = "src/bin/writer.rs"
+
+[[bin]]
+name = "reader"
+path = "src/bin/reader.rs"
+
+[dependencies]
+libc = "0.2"
+sha2 = "0.10"

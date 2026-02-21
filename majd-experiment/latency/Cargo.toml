@@ -1,0 +1,19 @@
+[package]
+name = "latency"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "futex"
+path = "src/bin/futex.rs"
+
+[[bin]]
+name = "busy"
+path = "src/bin/busy.rs"
+
+[[bin]]
+name = "futex_active"
+path = "src/bin/futex_active.rs"
+
+[dependencies]
+libc = "0.2.164"
