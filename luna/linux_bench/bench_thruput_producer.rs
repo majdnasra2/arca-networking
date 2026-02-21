@@ -1,0 +1,282 @@
+// // Process A: Creates shared memory, initializes to 0, increments when odd
+
+// use std::env;
+// use std::ffi::CString;
+// use std::sync::atomic::{AtomicU32, Ordering};
+
+// const CHUNK_SIZE: u32 = 1024; // Write in 1KB chunks
+
+// fn main() {
+//     let args: Vec<String> = env::args().collect();
+    
+//     if args.len() < 4 {
+//         eprintln!("Usage: {} <shared_mem_name> <share_mem_size> <transfer_size>", args[0]);
+//         std::process::exit(1);
+//     }
+    
+//     let shm_name = &args[1];
+//     let shm_size: u32 = args[2].parse()
+//         .expect("share_mem_size must be a valid number");
+//     let transfer_size: u64 = args[3].parse()
+//         .expect("transfer_size must be a valid number");
+    
+//     // Add '/' prefix if needed
+//     let shm_name = if shm_name.starts_with('/') {
+//         shm_name.to_string()
+//     } else {
+//         format!("/{}", shm_name)
+//     };
+    
+//     // Convert to C string
+//     let c_name = CString::new(shm_name.as_bytes()).unwrap();
+    
+//     // Open/create shared memory
+//     let fd = unsafe {
+//         libc::shm_open(
+//             c_name.as_ptr(),           // pointer to name string
+//             libc::O_CREAT | libc::O_RDWR,  // create if needed, read/write
+//             0o666                       // permissions: read/write for all
+//         )
+//     };
+    
+//     if fd < 0 {
+//         panic!("Failed to create shared memory");
+//     }
+    
+//     // Set size to shm_size bytes (size of u32)
+//     unsafe {
+//         libc::ftruncate(fd, shm_size);
+//     }
+    
+//     // Map shared memory into our address space
+//     let ptr = unsafe {
+//         libc::mmap(
+//             std::ptr::null_mut(),      // let OS choose address
+//             shm_size,                          // shm_size bytes
+//             libc::PROT_READ | libc::PROT_WRITE,  // read and write access
+//             libc::MAP_SHARED,           // share with other processes
+//             fd,                         // our file descriptor
+//             0                           // offset 0
+//         )
+//     };
+    
+//     if ptr == libc::MAP_FAILED {
+//         panic!("Failed to map shared memory");
+//     }
+    
+//     // initilize uint64_t start_index = 0 in the shared memory (start_index is atomic)
+//     // initilize uint64_t end_index = 0 in the shared memory (end_index is atomic)
+//     // initialize uint32_t transfer_started = 0 in the shared memory
+//     // data_start = ptr + 20 byte (for start_index, end_index, and transfer_started)
+
+//     // Prepare data chunk (all zeros as specified)
+//     let src = vec![0u8; CHUNK_SIZE];
+//     let mut total_written = 0u64;
+
+//     // Start timing when we write the FIRST byte
+//     while (!transfer_started); // wait till 2nd thread change transfer_started to 1
+
+//     let start_time = Instant::now();
+    
+//     println!("Starting write...");
+    
+//     // while (total_written < transfer_size)
+
+//         // unused_len = shm_size - (atomic read(end_index) - atomic read(start_index)) 
+        
+//         // if (unused_len > 0)
+//             // barrier (the read of end_index, start_index should happen before any memcpy)
+            
+//             // len = min (CHUNK_SIZE, unused_len)
+
+//             // write_start = end_idx % shm_size
+//             // l = min(len, shm_size - write_start);
+
+//             // memcpy(write_start, src, l);
+//             // memcpy(data_start, src + l, len - l);
+
+//             // barrier (the write of end_index should happen after all memcpy)  smp_wmb()
+            
+//             // atomic write end_index += len
+//             // total_written += len
+//         // else
+//             // spins and waits
+    
+//     // while (transfer_started); // wait till 2nd thread change transfer_started to 0
+
+//     // end timer
+//     // print total time
+// }
+
+
+use std::env;
+use std::ffi::CString;
+use std::sync::atomic::{AtomicU64, AtomicU32, Ordering, fence};
+use std::time::Instant;
+use std::ptr;
+
+const CHUNK_SIZE: u32 = 1024;
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    
+    if args.len() < 4 {
+        eprintln!("Usage: {} <shared_mem_name> <share_mem_size> <transfer_size>", args[0]);
+        std::process::exit(1);
+    }
+    
+    let shm_name = &args[1];
+    let shm_size: u64 = args[2].parse()
+        .expect("share_mem_size must be a valid number");
+    let transfer_size: u64 = args[3].parse()
+        .expect("transfer_size must be a valid number");
+    
+    // Add '/' prefix if needed
+    let shm_name = if shm_name.starts_with('/') {
+        shm_name.to_string()
+    } else {
+        format!("/{}", shm_name)
+    };
+    
+    // Convert to C string
+    let c_name = CString::new(shm_name.as_bytes()).unwrap();
+    
+    // Open/create shared memory
+    let fd = unsafe {
+        libc::shm_open(
+            c_name.as_ptr(),
+            libc::O_CREAT | libc::O_RDWR,
+            0o666
+        )
+    };
+    
+    if fd < 0 {
+        panic!("Failed to create shared memory");
+    }
+    
+    // Total size: 8 bytes (start_index) + 8 bytes (end_index) + 4 bytes (transfer_started) + shm_size (data)
+    let total_size = 20 + shm_size;
+    
+    // Set size
+    unsafe {
+        libc::ftruncate(fd, total_size as i64);
+    }
+    
+    // Map shared memory into our address space
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            total_size as usize,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            fd,
+            0
+        )
+    };
+    
+    if ptr == libc::MAP_FAILED {
+        panic!("Failed to map shared memory");
+    }
+    
+    let base = ptr as *mut u8;
+    let start_index = unsafe { &*(base as *mut AtomicU64) };
+    let end_index = unsafe { &*(base.add(8) as *mut AtomicU64) };
+    let transfer_started = unsafe { &*(base.add(16) as *mut AtomicU32) };
+    let data_start = unsafe { base.add(20) };
+    
+    // Prepare data chunk (all zeros)
+    // let src = vec![0u8; CHUNK_SIZE as usize];
+
+    // Fill with pattern: 1, 2, 3, ..., 255, 1, 2, 3, ...
+    let mut src = vec![0u8; CHUNK_SIZE as usize];
+    for i in 0..CHUNK_SIZE as usize {
+        src[i] = ((i % 255) + 1) as u8;
+    }
+
+    let mut total_written = 0u64;
+    
+    println!("Producer: Waiting for consumer to start (transfer_started=1)...");
+    
+    // Wait till consumer changes transfer_started to 1
+    while transfer_started.load(Ordering::Acquire) == 0 {
+        std::hint::spin_loop();
+    }
+    
+    println!("Producer: Consumer ready, starting write...");
+    let start_time = Instant::now();
+    
+    // Main write loop
+    while total_written < transfer_size {
+        // Read indices
+        let end_idx = end_index.load(Ordering::Acquire);
+        let start_idx = start_index.load(Ordering::Acquire);
+        
+        // Calculate unused length
+        let unused_len = shm_size - (end_idx - start_idx);
+        
+        if unused_len > 0 {            
+            let len = std::cmp::min(CHUNK_SIZE as u64, unused_len);
+            
+            // Calculate write position with wrap-around
+            let write_start = (end_idx % shm_size) as usize;
+            let l = std::cmp::min(len, shm_size - (end_idx % shm_size)) as usize;
+            
+            unsafe {
+                // First part (until wrap or end of chunk)
+                ptr::copy_nonoverlapping(
+                    src.as_ptr(),
+                    data_start.add(write_start),
+                    l
+                );
+                
+                // Second part (wrapped around to beginning)
+                if l < len as usize {
+                    ptr::copy_nonoverlapping(
+                        src.as_ptr().add(l),
+                        data_start,
+                        len as usize - l
+                    );
+                }
+            }
+            
+            // Barrier: smp_wmb() - ensure data writes complete before index update
+            // On x86, this is just a compiler barrier since Store→Store is guaranteed
+            fence(Ordering::Release);
+            
+            // Update end_index
+            end_index.store(end_idx + len, Ordering::Release);
+            total_written += len;
+
+            // println!("{:?}", &src[0..CHUNK_SIZE as usize]);
+            
+        } else {
+            // Buffer full, spin and wait
+            std::hint::spin_loop();
+        }
+    }
+    
+    println!("Producer: Finished writing {} bytes", total_written);
+    println!("Producer: Waiting for consumer to finish (transfer_started=0)...");
+    
+    // Wait till consumer changes transfer_started to 0
+    while transfer_started.load(Ordering::Relaxed) != 0 {
+        std::hint::spin_loop();
+    }
+    
+    let elapsed = start_time.elapsed();
+    
+    println!("========================================");
+    println!("PRODUCER STATS");
+    println!("========================================");
+    // println!("Total time: {:.6} seconds", elapsed.as_secs_f64());
+    println!("Total time: {} µs", elapsed.as_micros());
+    println!("Data written: {} bytes", total_written );
+    println!("Throughput: {:.4} GB / s", total_written as f64 / (1024.0 * 1024.0 * 1024.0 * elapsed.as_secs_f64()));
+    println!("========================================");
+    
+    // Cleanup
+    unsafe {
+        libc::munmap(ptr, total_size as usize);
+        libc::close(fd);
+    }
+}
