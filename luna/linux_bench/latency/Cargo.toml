@@ -1,0 +1,22 @@
+[package]
+name = "latency"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2"
+# rand = "0.8"
+
+[[bin]]
+name = "bench_spin_a"
+path = "bench_spin_a.rs"
+[[bin]]
+name = "bench_spin_b"
+path = "bench_spin_b.rs"
+
+[[bin]]
+name = "bench_futex_a"
+path = "bench_futex_a.rs"
+[[bin]]
+name = "bench_futex_b"
+path = "bench_futex_b.rs"
