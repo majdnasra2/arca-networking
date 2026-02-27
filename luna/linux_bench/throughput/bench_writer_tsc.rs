@@ -3,6 +3,8 @@ use std::ffi::CString;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering, fence};
 use std::time::Instant;
 use std::ptr;
+use std::arch::x86_64::_rdtsc;
+// use rand::RngCore;
 
 const CHUNK_SIZE: u32 = 1024;
 
@@ -81,18 +83,29 @@ fn main() {
     for i in 0..CHUNK_SIZE as usize {
         src[i] = ((i % 255) + 1) as u8;
     }
+    // rand::thread_rng().fill_bytes(&mut src);
 
     let mut total_written = 0u64;
+
+    #[cfg(debug_assertions)]
+    let mut xor_checksum: u8 = 0;
+
+    // tsc
+    let ckpt_total_interval = 10;
+    let ckpt_interval_sz = (transfer_size + ckpt_total_interval - 1) / ckpt_total_interval;
+    let mut ckpt_next = ckpt_interval_sz;
     
-    println!("Producer: Waiting for consumer to start (transfer_started=1)...");
+    println!("Writer: Waiting for reader to start (transfer_started=1)...");
     
-    // Wait till consumer changes transfer_started to 1
+    // Wait till reader changes transfer_started to 1
     while transfer_started.load(Ordering::Acquire) == 0 {
         std::hint::spin_loop();
     }
     
-    println!("Producer: Consumer ready, starting write...");
+    println!("Writer: Reader ready, starting write...");
     let start_time = Instant::now();
+    // println!("--- Writer started tsc: {} ---", unsafe { _rdtsc() });
+    println!("--- Writer checkpoint 0/{} tsc: {} ---", ckpt_total_interval, unsafe { _rdtsc() });
     
     // Main write loop
     while total_written < transfer_size {
@@ -104,11 +117,11 @@ fn main() {
         let unused_len = shm_size - (end_idx - start_idx);
         
         if unused_len > 0 {            
-            let len = std::cmp::min(CHUNK_SIZE as u64, unused_len);
+            let len = (CHUNK_SIZE as u64).min(transfer_size - total_written).min(unused_len);
             
             // Calculate write position with wrap-around
             let write_start = (end_idx % shm_size) as usize;
-            let l = std::cmp::min(len, shm_size - (end_idx % shm_size)) as usize;
+            let l = std::cmp::min(len, shm_size - write_start as u64) as usize;
             
             unsafe {
                 // First part (until wrap or end of chunk)
@@ -136,18 +149,35 @@ fn main() {
             end_index.store(end_idx + len, Ordering::Release);
             total_written += len;
 
-            // println!("{:?}", &src[0..CHUNK_SIZE as usize]);
+            #[cfg(debug_assertions)]
+            {
+                // println!("{:?}", &src[0..len as usize]);
+                for i in 0..len as usize {
+                    xor_checksum ^= src[i];
+                }
+            }
+
+            if total_written > ckpt_next {
+                println!("--- Writer checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, 
+                    ckpt_total_interval, unsafe { _rdtsc() });
+                ckpt_next += ckpt_interval_sz;
+            }
             
         } else {
             // Buffer full, spin and wait
             std::hint::spin_loop();
         }
     }
+
+    println!("--- Writer checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, ckpt_total_interval, unsafe { _rdtsc() });
+    println!("Writer: Finished writing {} bytes", total_written);
     
-    println!("Producer: Finished writing {} bytes", total_written);
-    println!("Producer: Waiting for consumer to finish (transfer_started=0)...");
+    #[cfg(debug_assertions)]
+    println!("Writer XOR checksum: 0x{:02X}", xor_checksum);
+
+    println!("Writer: Waiting for reader to finish ...");
     
-    // Wait till consumer changes transfer_started to 0
+    // Wait till reader changes transfer_started to 0
     while transfer_started.load(Ordering::Relaxed) != 0 {
         std::hint::spin_loop();
     }
@@ -155,10 +185,10 @@ fn main() {
     let elapsed = start_time.elapsed();
     
     println!("========================================");
-    println!("PRODUCER STATS");
+    println!("WRITER STATS");
     println!("========================================");
     // println!("Total time: {:.6} seconds", elapsed.as_secs_f64());
-    println!("Total time: {} µs", elapsed.as_micros());
+    println!("Total time: {} µs, {} s", elapsed.as_micros(), elapsed.as_secs_f64());
     println!("Data written: {} bytes", total_written );
     println!("Throughput: {:.4} GB / s", total_written as f64 / (1024.0 * 1024.0 * 1024.0 * elapsed.as_secs_f64()));
     println!("========================================");

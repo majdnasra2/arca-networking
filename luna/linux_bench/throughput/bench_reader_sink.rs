@@ -29,7 +29,7 @@ fn main() {
     // Convert to C string
     let c_name = CString::new(shm_name.as_bytes()).unwrap();
     
-    println!("Consumer: Waiting for producer to create shared memory...");
+    println!("Reader: Waiting for writer to create shared memory...");
     
     // Open existing shared memory (no O_CREAT flag)
     let fd = loop {
@@ -49,7 +49,7 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
     
-    println!("Consumer: Shared memory found!");
+    println!("Reader: Shared memory found!");
     
     // Total size: 8 bytes (start_index) + 8 bytes (end_index) + 4 bytes (transfer_started) + shm_size (data)
     let total_size = 20 + shm_size;
@@ -80,11 +80,14 @@ fn main() {
     // Prepare buffer for reading
     let mut dst = vec![0u8; CHUNK_SIZE as usize];
     let mut total_read = 0u64;
-    
-    // Change transfer_started to 1 (signal producer to start)
+
+    #[cfg(debug_assertions)]
+    let mut xor_checksum: u8 = 0;
+
+    // Change transfer_started to 1 (signal writer to start)
     transfer_started.store(1, Ordering::Release);
     
-    println!("Consumer: Signaled producer to start, waiting for data...");
+    println!("Reader: Signaled writer to start, waiting for data...");
     
     // Main read loop
     while total_read < transfer_size {
@@ -95,12 +98,12 @@ fn main() {
         // Calculate available length
         let avail_len = end_idx - start_idx;
         
-        if avail_len > 0 {                        
-            let len = std::cmp::min(CHUNK_SIZE as u64, avail_len);
-            
+        if avail_len > 0 {        
+            let len = (CHUNK_SIZE as u64).min(transfer_size - total_read).min(avail_len);
+
             // Calculate read position with wrap-around
             let read_start = (start_idx % shm_size) as usize;
-            let l = std::cmp::min(len, shm_size - (start_idx % shm_size)) as usize;
+            let l = std::cmp::min(len, shm_size - read_start as u64) as usize;
             
             unsafe {
                 // First part (until wrap or end of chunk)
@@ -128,18 +131,25 @@ fn main() {
             start_index.store(start_idx + len, Ordering::Relaxed);
             total_read += len;
 
-            // println!("{:?}", &dst[0..CHUNK_SIZE as usize]);
-            
+            #[cfg(debug_assertions)]
+            {
+                // println!("{:?}", &src[0..len as usize]);
+                for i in 0..len as usize {
+                    xor_checksum ^= dst[i];
+                }
+            }
         } else {
             // Buffer empty, spin and wait
             std::hint::spin_loop();
         }
     }
-    
-    println!("Consumer: Finished reading {} bytes", total_read);
-    
-    // Change transfer_started to 0 (signal producer we're done)
+
+    println!("Reader: Finished reading {} bytes", total_read);
+
     transfer_started.store(0, Ordering::Relaxed);
+  
+    #[cfg(debug_assertions)]
+    println!("Reader XOR checksum: 0x{:02X}", xor_checksum);
     
     // Cleanup
     unsafe {

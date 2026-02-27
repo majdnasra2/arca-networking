@@ -1,0 +1,28 @@
+[package]
+name = "throughput"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2"
+# rand = "0.8"
+
+[[bin]]
+name = "bench_reader"
+path = "bench_reader.rs"
+[[bin]]
+name = "bench_writer"
+path = "bench_writer.rs"
+[[bin]]
+name = "bench_reader_tsc"
+path = "bench_reader_tsc.rs"
+[[bin]]
+name = "bench_writer_tsc"
+path = "bench_writer_tsc.rs"
+
+[[bin]]
+name = "bench_reader_sink"
+path = "bench_reader_sink.rs"
+[[bin]]
+name = "bench_reader_sink_tsc"
+path = "bench_reader_sink_tsc.rs"
