@@ -104,8 +104,7 @@ fn main() {
     
     println!("Writer: Reader ready, starting write...");
     let start_time = Instant::now();
-    // println!("--- Writer started tsc: {} ---", unsafe { _rdtsc() });
-    println!("--- Writer checkpoint 0/{} tsc: {} ---", ckpt_total_interval, unsafe { _rdtsc() });
+    eprintln!("--- Writer checkpoint 0/{} tsc: {} ---", ckpt_total_interval, unsafe { _rdtsc() });
     
     // Main write loop
     while total_written < transfer_size {
@@ -158,7 +157,7 @@ fn main() {
             }
 
             if total_written > ckpt_next {
-                println!("--- Writer checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, 
+                eprintln!("--- Writer checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, 
                     ckpt_total_interval, unsafe { _rdtsc() });
                 ckpt_next += ckpt_interval_sz;
             }
@@ -169,7 +168,7 @@ fn main() {
         }
     }
 
-    println!("--- Writer checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, ckpt_total_interval, unsafe { _rdtsc() });
+    eprintln!("--- Writer checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, ckpt_total_interval, unsafe { _rdtsc() });
     println!("Writer: Finished writing {} bytes", total_written);
     
     #[cfg(debug_assertions)]
