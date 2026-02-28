@@ -3,7 +3,7 @@ use std::ffi::CString;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering, fence};
 use std::time::Instant;
 use std::ptr;
-use std::arch::x86_64::_rdtsc;
+mod tsc;
 // use rand::RngCore;
 
 const CHUNK_SIZE: u32 = 1024;
@@ -104,7 +104,7 @@ fn main() {
     
     println!("Writer: Reader ready, starting write...");
     let start_time = Instant::now();
-    eprintln!("--- Writer checkpoint 0/{} tsc: {} ---", ckpt_total_interval, unsafe { _rdtsc() });
+    eprintln!("--- Writer checkpoint 0/{} tsc: {} ---", ckpt_total_interval, tsc::read_tsc());
     
     // Main write loop
     while total_written < transfer_size {
@@ -158,7 +158,7 @@ fn main() {
 
             if total_written > ckpt_next {
                 eprintln!("--- Writer checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, 
-                    ckpt_total_interval, unsafe { _rdtsc() });
+                    ckpt_total_interval, tsc::read_tsc());
                 ckpt_next += ckpt_interval_sz;
             }
             
@@ -168,7 +168,7 @@ fn main() {
         }
     }
 
-    eprintln!("--- Writer checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, ckpt_total_interval, unsafe { _rdtsc() });
+    eprintln!("--- Writer checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, ckpt_total_interval, tsc::read_tsc());
     println!("Writer: Finished writing {} bytes", total_written);
     
     #[cfg(debug_assertions)]
