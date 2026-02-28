@@ -5,13 +5,11 @@ use std::ptr;
 use std::mem::size_of;
 use throughput::{ShmHeader, read_tsc};
 
-const CHUNK_SIZE: u32 = 1024;
-
 fn main() {
     let args: Vec<String> = env::args().collect();
     
-    if args.len() < 4 {
-        eprintln!("Usage: {} <shared_mem_name> <share_mem_size> <transfer_size>", args[0]);
+    if args.len() < 5 {
+        eprintln!("Usage: {} <shared_mem_name> <share_mem_size> <transfer_size> <read_chunk_size>", args[0]);
         std::process::exit(1);
     }
     
@@ -20,6 +18,8 @@ fn main() {
         .expect("share_mem_size must be a valid number");
     let transfer_size: u64 = args[3].parse()
         .expect("transfer_size must be a valid number");
+    let chunk_size: u32 = args[4].parse()
+        .expect("chunk_size must be a valid number");
     
     // Add '/' prefix if needed
     let shm_name = if shm_name.starts_with('/') {
@@ -75,7 +75,7 @@ fn main() {
     let data_start = unsafe { (ptr as *mut u8).add(size_of::<ShmHeader>()) };
     
     // Prepare buffer for reading
-    let mut dst = vec![0u8; CHUNK_SIZE as usize];
+    let mut dst = vec![0u8; chunk_size as usize];
     let mut total_read = 0u64;
 
     #[cfg(debug_assertions)]
@@ -99,7 +99,7 @@ fn main() {
         let avail_len = end_idx - start_idx;
         
         if avail_len > 0 {        
-            let len = (CHUNK_SIZE as u64).min(transfer_size - total_read).min(avail_len);
+            let len = (chunk_size as u64).min(transfer_size - total_read).min(avail_len);
 
             // Calculate read position with wrap-around
             let read_start = (start_idx % shm_size) as usize;

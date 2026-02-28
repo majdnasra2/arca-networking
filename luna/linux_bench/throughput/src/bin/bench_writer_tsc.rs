@@ -7,13 +7,11 @@ use std::mem::size_of;
 use throughput::{ShmHeader, read_tsc};
 // use rand::RngCore;
 
-const CHUNK_SIZE: u32 = 1024;
-
 fn main() {
     let args: Vec<String> = env::args().collect();
     
-    if args.len() < 4 {
-        eprintln!("Usage: {} <shared_mem_name> <share_mem_size> <transfer_size>", args[0]);
+    if args.len() < 5 {
+        eprintln!("Usage: {} <shared_mem_name> <share_mem_size> <transfer_size> <write_chunk_size>", args[0]);
         std::process::exit(1);
     }
     
@@ -22,7 +20,8 @@ fn main() {
         .expect("share_mem_size must be a valid number");
     let transfer_size: u64 = args[3].parse()
         .expect("transfer_size must be a valid number");
-        
+    let chunk_size: u32 = args[4].parse()
+        .expect("chunk_size must be a valid number");
     
     // Add '/' prefix if needed
     let shm_name = if shm_name.starts_with('/') {
@@ -74,11 +73,11 @@ fn main() {
     let data_start = unsafe { (ptr as *mut u8).add(size_of::<ShmHeader>()) };
     
     // Prepare data chunk (all zeros)
-    // let src = vec![0u8; CHUNK_SIZE as usize];
+    // let src = vec![0u8; chunk_size as usize];
 
     // Fill with pattern: 1, 2, 3, ..., 255, 1, 2, 3, ...
-    let mut src = vec![0u8; CHUNK_SIZE as usize];
-    for i in 0..CHUNK_SIZE as usize {
+    let mut src = vec![0u8; chunk_size as usize];
+    for i in 0..chunk_size as usize {
         src[i] = ((i % 255) + 1) as u8;
     }
     // rand::thread_rng().fill_bytes(&mut src);
@@ -111,7 +110,7 @@ fn main() {
         let unused_len = shm_size - (end_idx - start_idx);
         
         if unused_len > 0 {            
-            let len = (CHUNK_SIZE as u64).min(transfer_size - total_written).min(unused_len);
+            let len = (chunk_size as u64).min(transfer_size - total_written).min(unused_len);
             
             // Calculate write position with wrap-around
             let write_start = (end_idx % shm_size) as usize;
