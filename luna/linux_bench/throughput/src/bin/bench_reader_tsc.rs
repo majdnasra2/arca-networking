@@ -1,8 +1,9 @@
 use std::env;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicU64, AtomicU32, Ordering, fence};
+use std::sync::atomic::{Ordering, fence};
 use std::ptr;
-mod tsc;
+use std::mem::size_of;
+use throughput::{ShmHeader, read_tsc};
 
 const CHUNK_SIZE: u32 = 1024;
 
@@ -52,10 +53,9 @@ fn main() {
     
     println!("Reader: Shared memory found!");
     
-    // Total size: 8 bytes (start_index) + 8 bytes (end_index) + 4 bytes (transfer_started) + shm_size (data)
-    let total_size = 20 + shm_size;
+    let total_size = size_of::<ShmHeader>() as u64 + shm_size;
+    println!("Writer: ShmHeader size: {}", size_of::<ShmHeader>());
     
-    // Map shared memory into our address space
     let ptr = unsafe {
         libc::mmap(
             std::ptr::null_mut(),
@@ -72,14 +72,21 @@ fn main() {
     }
     
     // Get pointers to shared variables
-    let base = ptr as *mut u8;
-    let start_index = unsafe { &*(base as *mut AtomicU64) };
-    let end_index = unsafe { &*(base.add(8) as *mut AtomicU64) };
-    let transfer_started = unsafe { &*(base.add(16) as *mut AtomicU32) };
-    let data_start = unsafe { base.add(20) };
+    let header = unsafe { &*(ptr as *mut ShmHeader) };
+    let data_start = unsafe { (ptr as *mut u8).add(size_of::<ShmHeader>()) };
     
     // Prepare buffer for reading
-    let mut dst = vec![0u8; CHUNK_SIZE as usize];
+    let mut dst = vec![0u8; transfer_size as usize];
+    // Explicitly zero out dst in CHUNK_SIZE chunks before reader starts
+    // for chunk in dst.chunks_mut(CHUNK_SIZE as usize) {
+    //     chunk.fill(0u8);
+    // }
+
+    // Explicitly 1 out dst in CHUNK_SIZE chunks before reader starts
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+    for i in (0..dst.len()).step_by(page_size) {
+        dst[i] = 1;  // non-zero write forces real page fault
+    }
     let mut total_read = 0u64;
 
     #[cfg(debug_assertions)]
@@ -91,18 +98,15 @@ fn main() {
     let mut ckpt_next = ckpt_interval_sz;
 
     // Change transfer_started to 1 (signal writer to start)
-    transfer_started.store(1, Ordering::Release);
+    header.transfer_started.store(1, Ordering::Release);
     println!("Reader: Signaled writer to start, waiting for data...");
 
-    eprintln!("--- Reader checkpoint 0/{} tsc: {}", ckpt_total_interval, tsc::read_tsc());
+    eprintln!("--- Reader checkpoint 0/{} tsc: {}", ckpt_total_interval, read_tsc());
     
-    // Main read loop
     while total_read < transfer_size {
-        // Read indices
-        let end_idx = end_index.load(Ordering::Acquire);
-        let start_idx = start_index.load(Ordering::Acquire);
+        let end_idx = header.end_index.load(Ordering::Acquire);
+        let start_idx = header.start_index.load(Ordering::Acquire);
         
-        // Calculate available length
         let avail_len = end_idx - start_idx;
         
         if avail_len > 0 {        
@@ -116,7 +120,7 @@ fn main() {
                 // First part (until wrap or end of chunk)
                 ptr::copy_nonoverlapping(
                     data_start.add(read_start),
-                    dst.as_mut_ptr(),
+                    dst.as_mut_ptr().add(total_read as usize),
                     l
                 );
                 
@@ -124,7 +128,7 @@ fn main() {
                 if l < len as usize {
                     ptr::copy_nonoverlapping(
                         data_start,
-                        dst.as_mut_ptr().add(l),
+                        dst.as_mut_ptr().add(total_read as usize + l),
                         len as usize - l
                     );
                 }
@@ -134,36 +138,32 @@ fn main() {
             // On x86, this is just a compiler barrier since Store→Store is guaranteed
             fence(Ordering::Release);
             
-            // Update start_index
-            start_index.store(start_idx + len, Ordering::Relaxed);
+            header.start_index.store(start_idx + len, Ordering::Relaxed);
             total_read += len;
-
-            #[cfg(debug_assertions)]
-            {
-                // println!("{:?}", &src[0..len as usize]);
-                for i in 0..len as usize {
-                    xor_checksum ^= dst[i];
-                }
-            }
 
             if total_read > ckpt_next {
                 eprintln!("--- Reader checkpoint {}/{} tsc: {}", ckpt_next / ckpt_interval_sz, 
-                    ckpt_total_interval, tsc::read_tsc());
+                    ckpt_total_interval, read_tsc());
                 ckpt_next += ckpt_interval_sz;
             }
         } else {
-            // Buffer empty, spin and wait
             std::hint::spin_loop();
         }
     }
 
-    eprintln!("--- Reader checkpoint {}/{} tsc: {}", ckpt_next / ckpt_interval_sz, ckpt_total_interval, tsc::read_tsc());
+    eprintln!("--- Reader checkpoint {}/{} tsc: {}", ckpt_next / ckpt_interval_sz, ckpt_total_interval, read_tsc());
     println!("Reader: Finished reading {} bytes", total_read);
 
-    transfer_started.store(0, Ordering::Relaxed);
+    header.transfer_started.store(0, Ordering::Relaxed);
 
     #[cfg(debug_assertions)]
-    println!("Reader XOR checksum: 0x{:02X}", xor_checksum);
+    {
+        // println!("{:?}", &dst[0..total_read as usize]);
+        for i in 0..total_read as usize {
+            xor_checksum ^= dst[i];
+        }
+        println!("Reader XOR checksum: 0x{:02X}", xor_checksum);
+    }   
     
     // Cleanup
     unsafe {

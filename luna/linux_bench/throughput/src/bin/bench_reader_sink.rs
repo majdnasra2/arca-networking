@@ -1,7 +1,9 @@
 use std::env;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicU64, AtomicU32, Ordering, fence};
+use std::sync::atomic::{Ordering, fence};
 use std::ptr;
+use std::mem::size_of;
+use throughput::{ShmHeader};
 
 const CHUNK_SIZE: u32 = 1024;
 
@@ -51,10 +53,8 @@ fn main() {
     
     println!("Reader: Shared memory found!");
     
-    // Total size: 8 bytes (start_index) + 8 bytes (end_index) + 4 bytes (transfer_started) + shm_size (data)
-    let total_size = 20 + shm_size;
+    let total_size = size_of::<ShmHeader>() as u64 + shm_size;
     
-    // Map shared memory into our address space
     let ptr = unsafe {
         libc::mmap(
             std::ptr::null_mut(),
@@ -71,11 +71,8 @@ fn main() {
     }
     
     // Get pointers to shared variables
-    let base = ptr as *mut u8;
-    let start_index = unsafe { &*(base as *mut AtomicU64) };
-    let end_index = unsafe { &*(base.add(8) as *mut AtomicU64) };
-    let transfer_started = unsafe { &*(base.add(16) as *mut AtomicU32) };
-    let data_start = unsafe { base.add(20) };
+    let header = unsafe { &*(ptr as *mut ShmHeader) };
+    let data_start = unsafe { (ptr as *mut u8).add(size_of::<ShmHeader>()) };
     
     // Prepare buffer for reading
     let mut dst = vec![0u8; CHUNK_SIZE as usize];
@@ -85,17 +82,14 @@ fn main() {
     let mut xor_checksum: u8 = 0;
 
     // Change transfer_started to 1 (signal writer to start)
-    transfer_started.store(1, Ordering::Release);
+    header.transfer_started.store(1, Ordering::Release);
     
     println!("Reader: Signaled writer to start, waiting for data...");
     
-    // Main read loop
     while total_read < transfer_size {
-        // Read indices
-        let end_idx = end_index.load(Ordering::Acquire);
-        let start_idx = start_index.load(Ordering::Acquire);
+        let end_idx = header.end_index.load(Ordering::Acquire);
+        let start_idx = header.start_index.load(Ordering::Acquire);
         
-        // Calculate available length
         let avail_len = end_idx - start_idx;
         
         if avail_len > 0 {        
@@ -127,8 +121,7 @@ fn main() {
             // On x86, this is just a compiler barrier since Store→Store is guaranteed
             fence(Ordering::Release);
             
-            // Update start_index
-            start_index.store(start_idx + len, Ordering::Relaxed);
+            header.start_index.store(start_idx + len, Ordering::Relaxed);
             total_read += len;
 
             #[cfg(debug_assertions)]
@@ -139,14 +132,13 @@ fn main() {
                 }
             }
         } else {
-            // Buffer empty, spin and wait
             std::hint::spin_loop();
         }
     }
 
     println!("Reader: Finished reading {} bytes", total_read);
 
-    transfer_started.store(0, Ordering::Relaxed);
+    header.transfer_started.store(0, Ordering::Relaxed);
   
     #[cfg(debug_assertions)]
     println!("Reader XOR checksum: 0x{:02X}", xor_checksum);

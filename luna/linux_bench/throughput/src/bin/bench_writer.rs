@@ -1,9 +1,10 @@
 use std::env;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicU64, AtomicU32, Ordering, fence};
+use std::sync::atomic::{Ordering, fence};
 use std::time::Instant;
 use std::ptr;
-mod tsc;
+use std::mem::size_of;
+use throughput::{ShmHeader};
 // use rand::RngCore;
 
 const CHUNK_SIZE: u32 = 1024;
@@ -45,15 +46,12 @@ fn main() {
         panic!("Failed to create shared memory");
     }
     
-    // Total size: 8 bytes (start_index) + 8 bytes (end_index) + 4 bytes (transfer_started) + shm_size (data)
-    let total_size = 20 + shm_size;
+    let total_size = size_of::<ShmHeader>() as u64 + shm_size;
     
-    // Set size
     unsafe {
         libc::ftruncate(fd, total_size as i64);
     }
     
-    // Map shared memory into our address space
     let ptr = unsafe {
         libc::mmap(
             std::ptr::null_mut(),
@@ -69,11 +67,9 @@ fn main() {
         panic!("Failed to map shared memory");
     }
     
-    let base = ptr as *mut u8;
-    let start_index = unsafe { &*(base as *mut AtomicU64) };
-    let end_index = unsafe { &*(base.add(8) as *mut AtomicU64) };
-    let transfer_started = unsafe { &*(base.add(16) as *mut AtomicU32) };
-    let data_start = unsafe { base.add(20) };
+    // Get pointers to shared variables
+    let header = unsafe { &*(ptr as *mut ShmHeader) };
+    let data_start = unsafe { (ptr as *mut u8).add(size_of::<ShmHeader>()) };
     
     // Prepare data chunk (all zeros)
     // let src = vec![0u8; CHUNK_SIZE as usize];
@@ -89,32 +85,23 @@ fn main() {
 
     #[cfg(debug_assertions)]
     let mut xor_checksum: u8 = 0;
-
-    // tsc
-    let ckpt_total_interval = 10;
-    let ckpt_interval_sz = (transfer_size + ckpt_total_interval - 1) / ckpt_total_interval;
-    let mut ckpt_next = ckpt_interval_sz;
     
     println!("Writer: Waiting for reader to start (transfer_started=1)...");
     
     // Wait till reader changes transfer_started to 1
-    while transfer_started.load(Ordering::Acquire) == 0 {
+    while header.transfer_started.load(Ordering::Acquire) == 0 {
         std::hint::spin_loop();
     }
     
     println!("Writer: Reader ready, starting write...");
     let start_time = Instant::now();
-    eprintln!("--- Writer checkpoint 0/{} tsc: {}", ckpt_total_interval, tsc::read_tsc());
     
-    // Main write loop
     while total_written < transfer_size {
-        // Read indices
-        let end_idx = end_index.load(Ordering::Acquire);
-        let start_idx = start_index.load(Ordering::Acquire);
+        let end_idx = header.end_index.load(Ordering::Acquire);
+        let start_idx = header.start_index.load(Ordering::Acquire);
         
-        // Calculate unused length
         let unused_len = shm_size - (end_idx - start_idx);
-        
+
         if unused_len > 0 {            
             let len = (CHUNK_SIZE as u64).min(transfer_size - total_written).min(unused_len);
             
@@ -144,8 +131,7 @@ fn main() {
             // On x86, this is just a compiler barrier since Store→Store is guaranteed
             fence(Ordering::Release);
             
-            // Update end_index
-            end_index.store(end_idx + len, Ordering::Release);
+            header.end_index.store(end_idx + len, Ordering::Release);
             total_written += len;
 
             #[cfg(debug_assertions)]
@@ -155,20 +141,11 @@ fn main() {
                     xor_checksum ^= src[i];
                 }
             }
-
-            if total_written > ckpt_next {
-                eprintln!("--- Writer checkpoint {}/{} tsc: {}", ckpt_next / ckpt_interval_sz, 
-                    ckpt_total_interval, tsc::read_tsc());
-                ckpt_next += ckpt_interval_sz;
-            }
-            
         } else {
-            // Buffer full, spin and wait
             std::hint::spin_loop();
         }
     }
-
-    eprintln!("--- Writer checkpoint {}/{} tsc: {}", ckpt_next / ckpt_interval_sz, ckpt_total_interval, tsc::read_tsc());
+    
     println!("Writer: Finished writing {} bytes", total_written);
     
     #[cfg(debug_assertions)]
@@ -177,7 +154,7 @@ fn main() {
     println!("Writer: Waiting for reader to finish ...");
     
     // Wait till reader changes transfer_started to 0
-    while transfer_started.load(Ordering::Relaxed) != 0 {
+    while header.transfer_started.load(Ordering::Relaxed) != 0 {
         std::hint::spin_loop();
     }
     
