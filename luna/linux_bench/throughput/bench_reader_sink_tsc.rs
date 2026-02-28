@@ -94,7 +94,7 @@ fn main() {
     transfer_started.store(1, Ordering::Release);
     println!("Reader: Signaled writer to start, waiting for data...");
 
-    eprintln!("--- Reader checkpoint 0/{} tsc: {} ---", ckpt_total_interval, tsc::read_tsc());
+    eprintln!("--- Reader checkpoint 0/{} tsc: {}", ckpt_total_interval, tsc::read_tsc());
     
     // Main read loop
     while total_read < transfer_size {
@@ -147,7 +147,7 @@ fn main() {
             }
 
             if total_read > ckpt_next {
-                eprintln!("--- Reader checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, 
+                eprintln!("--- Reader checkpoint {}/{} tsc: {}", ckpt_next / ckpt_interval_sz, 
                     ckpt_total_interval, tsc::read_tsc());
                 ckpt_next += ckpt_interval_sz;
             }
@@ -157,7 +157,7 @@ fn main() {
         }
     }
 
-    eprintln!("--- Reader checkpoint {}/{} tsc: {} ---", ckpt_next / ckpt_interval_sz, ckpt_total_interval, tsc::read_tsc());
+    eprintln!("--- Reader checkpoint {}/{} tsc: {}", ckpt_next / ckpt_interval_sz, ckpt_total_interval, tsc::read_tsc());
     println!("Reader: Finished reading {} bytes", total_read);
 
     transfer_started.store(0, Ordering::Relaxed);
