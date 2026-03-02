@@ -7,11 +7,15 @@ use throughput::{Shared, BUF_SIZE};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: {} <shm_name>", args[0]);
+        eprintln!("usage: {} <shm_name> [size_mb]", args[0]);
         std::process::exit(2);
     }
 
     let shm_name = &args[1];
+    let cli_total_bytes: Option<u64> = args
+        .get(2)
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|mb| mb * 1024 * 1024);
     let interval: u64 = 10_000_000; // Record every 10 million bytes
     let mut next_milestone = interval;
     let mut records = Vec::new();
@@ -27,6 +31,17 @@ fn main() {
 
         while (*shm).total_bytes.load(Ordering::Relaxed) == 0 { std::hint::spin_loop(); }
         let total_bytes = (*shm).total_bytes.load(Ordering::Relaxed);
+
+        if let Some(expected_bytes) = cli_total_bytes {
+            if expected_bytes != total_bytes {
+                eprintln!(
+                    "reader: size mismatch (CLI: {} MiB, shared memory: {} MiB)",
+                    expected_bytes / (1024 * 1024),
+                    total_bytes / (1024 * 1024),
+                );
+                std::process::exit(1);
+            }
+        }
         let check_mode = (*shm).check_mode.load(Ordering::Relaxed) == 1;
 
         // PRE-ZERO the full sink to ensure no lazy allocation jitter
